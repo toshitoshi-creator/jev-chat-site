@@ -1,6 +1,7 @@
 import express from 'express';
 import { createTypeSafeAi } from '@ai-sdk/typesafe-ai';
 import { experimental_evaluate } from 'ai';
+import { generateReply } from './generate.js';
 
 const app = express();
 app.use(express.json());
@@ -97,6 +98,31 @@ app.post('/api/check', async (req, res) => {
     }
 
     res.json({ ...decide(is), probabilities });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'TypeSafe AI呼び出しに失敗しました: ' + err.message });
+  }
+});
+
+// Jevに1語ずつ選ばせて文章を組み立てる (generate.js を参照)
+app.post('/api/generate', async (req, res) => {
+  const { message } = req.body;
+  if (!message) {
+    return res.status(400).json({ error: 'message is required' });
+  }
+
+  try {
+    const result = await generateReply({
+      message,
+      evaluate: ({ state, questions }) =>
+        experimental_evaluate({
+          model: typeSafeAi.evaluationModel('jev-latest'),
+          state,
+          questions,
+        }),
+    });
+
+    res.json(result);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'TypeSafe AI呼び出しに失敗しました: ' + err.message });
