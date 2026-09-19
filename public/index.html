@@ -169,13 +169,28 @@
 
   function addTrace(trace) {
     if (!Array.isArray(trace) || trace.length === 0) return;
-    const lines = trace.map((t) => {
-      if (t.action !== 'append') return `${t.step}. [${t.action}] 完結度 ${pct(t.finished)}`;
-      const cands = t.candidates
-        ? '\n     候補: ' + t.candidates.map((c) => `${c.phrase} ${pct(c.probability)}`).join(' / ')
-        : '';
-      return `${t.step}. ${t.category} → 「${t.phrase}」  完結度 ${pct(t.finished)}${cands}`;
-    });
+
+    const lines = [];
+    for (const t of trace) {
+      if (t.phase === 'slot') {
+        lines.push(`[${t.slot}] ${t.chosen}${t.text ? ' → 「' + t.text + '」' : ' (何も置かない)'}`);
+        if (t.candidates && t.candidates.length) {
+          lines.push('    ' + t.candidates.map((c) => `${c.label} ${pct(c.probability)}`).join(' / '));
+        }
+      } else if (t.phase === 'compare') {
+        if (t.skipped) { lines.push(`[比較] ${t.skipped}`); continue; }
+        lines.push('[比較]');
+        for (const v of t.variants) {
+          const mark = v.name === t.chosen ? '◀ 採用' : '';
+          lines.push(`    ${v.name} (${v.body}) 「${v.text}」 ${mark}`);
+        }
+        if (t.candidates && t.candidates.length) {
+          lines.push('    ' + t.candidates.map((c) => `${c.label} ${pct(c.probability)}`).join(' / '));
+        }
+        if (typeof t.score === 'number') lines.push(`    適切さ: ${t.score.toFixed(2)}`);
+      }
+    }
+
     const div = document.createElement('div');
     div.className = 'trace';
     div.textContent = lines.join('\n');

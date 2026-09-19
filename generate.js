@@ -1,165 +1,188 @@
-// Jev だけで文章を作るための探索ループ。
+// Jev だけで文章を作る。
 //
-// Jevは文章を生成しないが、choice型で「候補のうちどれが最も自然か」を選ばせることはできる。
-// そこで「候補を出す → 選ばせる → つなげる」を繰り返して文を組み立てる。
-// 言語モデルのデコード処理を、語彙を自前の候補リストに置き換えて外側で書いている形になる。
+// Jevは文章を生成しないが、choice型で「候補のうちどれが最も適切か」を選ばせることはできる。
+//
+// 当初は「1語選ぶ → 下書きに足す → また選ぶ」を繰り返す方式にしていたが、
+// 実際に動かすと毎回ほぼ同じ確率分布が返ってきた。Jevは下書きの続きを予測するのではなく、
+// 毎回 message に対する答えを選び直していたため、同じ語が選ばれ続けてしまう。
+//
+// そこで「同じ質問を繰り返す」のをやめ、役割の違う枠(スロット)を用意して
+// それぞれ別の質問として1回のリクエストで埋める方式にした。
+// Jevは全質問を1リクエストでまとめて評価するので、これは1往復で済む。
 
-// ── 候補バンク ────────────────────────────────────
-// カテゴリごとに、続きの候補を並べる。
-// キーが実際に出力される文字列、値はJevへの説明。
-export const PHRASE_BANK = {
-  greeting: {
-    description: '挨拶',
-    phrases: {
-      'こんにちは': 'ふつうの挨拶',
-      'はじめまして': '初対面のとき',
-      'おはようございます': '朝の挨拶',
-      'こんばんは': '夜の挨拶',
+// ── スロット定義 ──────────────────────────────────
+// 文を「書き出し」「本体」「結び」の3枠に分け、枠ごとに候補を持たせる。
+// どの枠にも「なし」があるので、当てはまらないときは何も置かずに済む。
+export const SLOTS = [
+  {
+    key: 'opening',
+    description: '書き出し',
+    options: {
+      なし: { text: '', description: '書き出しを置かず、いきなり本題に入る' },
+      挨拶: { text: 'こんにちは！', description: '相手が挨拶してきたとき' },
+      初対面: { text: 'はじめまして！', description: '相手が初対面の挨拶をしたとき' },
+      相槌: { text: 'なるほど、', description: '相手の話を受け止めるとき' },
+      お礼: { text: 'ありがとうございます！', description: '相手がお礼を言ってきたとき' },
+      謝罪: { text: 'すみません、', description: '謝るとき' },
     },
   },
-  selfIntro: {
-    description: '自分が何者かを名乗る',
-    phrases: {
-      '！jevです': '名前を名乗る',
-      '。わたしはjevといいます': '丁寧に名乗る',
-      '。メッセージの内容を判定するAIです': '役割を説明する',
+  {
+    key: 'body',
+    description: '返事の本体',
+    options: {
+      名乗る: { text: 'jevです。', description: '相手が名前や正体を尋ねたとき' },
+      役割: {
+        text: 'メッセージの内容を判定するAIです。',
+        description: '自分が何をするものかを説明するとき',
+      },
+      できること: {
+        text: 'メッセージに特定の内容が含まれているかを判定できます。',
+        description: '何ができるのか、能力や機能を尋ねられたとき',
+      },
+      肯定: { text: 'はい、できます。', description: '可否を尋ねられて、できると答えるとき' },
+      否定: { text: 'いいえ、できません。', description: '可否を尋ねられて、できないと答えるとき' },
+      了解: { text: 'わかりました。', description: '依頼や連絡を受けて了解するとき' },
+      取次: {
+        text: 'キャンセルのご相談ですね。担当者におつなぎします。',
+        description: 'キャンセルや解約の相談をされたとき',
+      },
+      不明: {
+        text: 'すみません、うまく聞き取れませんでした。',
+        description: '上のどれにも当てはまらず、答えようがないとき',
+      },
     },
   },
-  ack: {
-    description: '相手の発言を受け止める相槌',
-    phrases: {
-      'なるほど': '納得したとき',
-      'そうなんですね': '共感を示すとき',
-      'ありがとうございます': 'お礼を言われたときの返し',
-      'すみません': '謝るとき',
+  {
+    key: 'closing',
+    description: '結び',
+    options: {
+      なし: { text: '', description: '何も付け足さずに終える' },
+      用件を聞く: {
+        text: 'なにか聞きたいことはありますか？',
+        description: '会話を続けたいとき',
+      },
+      促す: { text: 'お気軽にどうぞ。', description: '相手を促して終えるとき' },
+      丁寧: { text: 'よろしくお願いします。', description: '丁寧に締めるとき' },
+      言い直しを促す: {
+        text: '別の言い方で送ってみてください。',
+        description: '聞き取れなかったとき',
+      },
     },
   },
-  answer: {
-    description: '質問への直接の答え',
-    phrases: {
-      'はい': '肯定',
-      'いいえ': '否定',
-      '、わかりました': '了解したとき',
-      '、できます': '可能だと伝えるとき',
-      '、できません': '不可能だと伝えるとき',
-    },
-  },
-  askBack: {
-    description: '相手に聞き返す',
-    phrases: {
-      '。なにか聞きたいことはありますか？': '用件をたずねる',
-      '。どうされましたか？': '困りごとをたずねる',
-      '。もう少し詳しく教えてください': '説明を求める',
-    },
-  },
-  closing: {
-    description: '文を締めくくる',
-    phrases: {
-      '。よろしくお願いします': '丁寧に締める',
-      '。お気軽にどうぞ': '相手を促して締める',
-      '。': '句点だけで終える',
-    },
-  },
-};
+];
 
-// ── 質問の組み立て ────────────────────────────────
-// Jevは「全質問を1リクエストで同じstateに対して」評価する。
-// そこでカテゴリ選択と、全カテゴリ分の候補選択を同時に投げ、
-// 返ってきたカテゴリに対応する答えだけを採用する。1語につき1往復で済む。
-export function buildQuestions(bank = PHRASE_BANK) {
-  const questions = {
-    category: {
+// ── 1回目の質問: 各スロットを何で埋めるか ──────────
+export function buildSlotQuestions(slots = SLOTS) {
+  const questions = {};
+  for (const slot of slots) {
+    questions[slot.key] = {
       type: 'choice',
-      instructions:
-        'draftはmessageへの返信の書きかけです。この続きとして最も自然な種類はどれですか？',
+      instructions: `messageへの返信を組み立てます。「${slot.description}」に置くものとして最も適切なのはどれですか？`,
       criteria: Object.fromEntries(
-        Object.entries(bank).map(([key, cat]) => [key, cat.description]),
+        Object.entries(slot.options).map(([label, o]) => [label, o.description]),
       ),
-    },
-    finished: {
-      type: 'boolean',
-      instructions:
-        'draftは、messageへの返信としてすでに文が完結していますか？',
-    },
-  };
-
-  for (const [key, cat] of Object.entries(bank)) {
-    questions[`pick_${key}`] = {
-      type: 'choice',
-      instructions: `「${cat.description}」として、draftの続きに最も自然なものはどれですか？`,
-      criteria: cat.phrases,
     };
   }
-
   return questions;
 }
 
-// 確率分布から上位n件を取り出す(probabilitiesは返らないことがある)
-function topCandidates(probabilities, n = 3) {
-  if (!probabilities) return null;
+function rank(probabilities, n) {
+  if (!probabilities) return [];
   return Object.entries(probabilities)
     .sort((a, b) => b[1] - a[1])
     .slice(0, n)
-    .map(([phrase, probability]) => ({ phrase, probability }));
+    .map(([label, probability]) => ({ label, probability }));
 }
 
-// 既に使った候補を避けて次点を選ぶ(同じ語を繰り返して無限ループになるのを防ぐ)
-function chooseUnused(picked, used) {
-  if (!used.has(picked.choice)) return picked.choice;
-
-  const ranked = topCandidates(picked.probabilities, Infinity) ?? [];
-  const alternative = ranked.find((c) => !used.has(c.phrase));
-  return alternative ? alternative.phrase : null;
+// スロットの選択結果から文を組み立てる
+function assemble(slots, labels) {
+  return slots.map((s) => s.options[labels[s.key]]?.text ?? '').join('');
 }
 
-// ── 生成ループ ────────────────────────────────────
+// ── 2回目の質問: 組み上がった文を比べる ────────────
+// 本体を1位・2位・3位に差し替えた案を作り、文として一番良いものをJevに選ばせる。
+export function buildCompareQuestions(variants) {
+  return {
+    best: {
+      type: 'choice',
+      instructions: 'messageへの返信として最も自然で適切なのはどれですか？',
+      criteria: Object.fromEntries(variants.map((v, i) => [`案${i + 1}`, v.text])),
+    },
+    quality: {
+      type: 'score',
+      instructions: '案1はmessageへの返信としてどれくらい適切ですか？',
+      criteria: ['的外れ', 'かみ合っていない', '悪くない', '適切'],
+    },
+  };
+}
+
+// ── 本体 ──────────────────────────────────────────
 // evaluate は ({ state, questions }) => result の関数。
 // 本物のJevでもテスト用の偽物でも差し替えられるように引数で受け取る。
 export async function generateReply({
   message,
   evaluate,
-  bank = PHRASE_BANK,
-  maxSteps = 6,
-  stopThreshold = 0.7,
+  slots = SLOTS,
+  compare = true,
 }) {
-  const questions = buildQuestions(bank);
-  const used = new Set();
   const trace = [];
-  let draft = '';
 
-  for (let step = 1; step <= maxSteps; step++) {
-    const result = await evaluate({ state: { message, draft }, questions });
+  // 1往復目: 全スロットを同時に埋める
+  const slotResult = await evaluate({
+    state: { message },
+    questions: buildSlotQuestions(slots),
+  });
 
-    const finished = result.answers.finished.probability;
-    if (draft !== '' && finished >= stopThreshold) {
-      trace.push({ step, action: 'stop', finished });
-      break;
-    }
-
-    const category = result.answers.category.choice;
-    const picked = result.answers[`pick_${category}`];
-    if (!picked) {
-      trace.push({ step, action: 'error', category, reason: '候補が見つからない' });
-      break;
-    }
-
-    const phrase = chooseUnused(picked, used);
-    if (phrase === null) {
-      trace.push({ step, action: 'exhausted', category, finished });
-      break;
-    }
-
-    used.add(phrase);
-    draft += phrase;
+  const labels = {};
+  for (const slot of slots) {
+    const answer = slotResult.answers[slot.key];
+    labels[slot.key] = answer.choice;
     trace.push({
-      step,
-      action: 'append',
-      category,
-      phrase,
-      finished,
-      candidates: topCandidates(picked.probabilities),
+      phase: 'slot',
+      slot: slot.description,
+      chosen: answer.choice,
+      text: slot.options[answer.choice]?.text ?? '',
+      candidates: rank(answer.probabilities, 3),
     });
   }
 
-  return { reply: draft, trace, steps: trace.length };
+  const base = assemble(slots, labels);
+  if (!compare) return { reply: base, trace };
+
+  // 本体の2位・3位に差し替えた案を作る
+  const bodySlot = slots.find((s) => s.key === 'body');
+  const bodyRanking = rank(slotResult.answers.body?.probabilities, 3);
+  const variants = [{ label: labels.body, text: base }];
+  for (const { label } of bodyRanking) {
+    if (variants.length >= 3) break;
+    if (label === labels.body || !bodySlot.options[label]) continue;
+    variants.push({
+      label,
+      text: assemble(slots, { ...labels, body: label }),
+    });
+  }
+
+  if (variants.length < 2) {
+    trace.push({ phase: 'compare', skipped: '比較する案が1つしかない' });
+    return { reply: base, trace };
+  }
+
+  // 2往復目: 案を文として比べる
+  const compareResult = await evaluate({
+    state: { message },
+    questions: buildCompareQuestions(variants),
+  });
+
+  const winnerIndex = Number(String(compareResult.answers.best.choice).replace(/\D/g, '')) - 1;
+  const winner = variants[winnerIndex] ?? variants[0];
+
+  trace.push({
+    phase: 'compare',
+    variants: variants.map((v, i) => ({ name: `案${i + 1}`, body: v.label, text: v.text })),
+    chosen: compareResult.answers.best.choice,
+    candidates: rank(compareResult.answers.best.probabilities, 3),
+    score: compareResult.answers.quality?.score,
+  });
+
+  return { reply: winner.text, trace };
 }
