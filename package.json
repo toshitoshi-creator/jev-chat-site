@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@ai-sdk/typesafe-ai": "latest",
+    "ai": "latest",
     "express": "^4.19.2"
   }
 }

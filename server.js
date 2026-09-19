@@ -1,5 +1,6 @@
 import express from 'express';
 import { createTypeSafeAi } from '@ai-sdk/typesafe-ai';
+import { experimental_evaluate } from 'ai';
 
 const app = express();
 app.use(express.json());
@@ -7,7 +8,7 @@ app.use(express.static('public'));
 
 // 招待時にもらったAPIキーを環境変数 TYPESAFE_AI_API_KEY にセットしてから起動してください
 // 例: TYPESAFE_AI_API_KEY=xxxx node server.js
-const typesafe = createTypeSafeAi({
+const typeSafeAi = createTypeSafeAi({
   apiKey: process.env.TYPESAFE_AI_API_KEY,
 });
 
@@ -21,8 +22,9 @@ app.post('/api/check', async (req, res) => {
   }
 
   try {
-    const result = await typesafe.evaluate({
-      state: message,
+    const result = await experimental_evaluate({
+      model: typeSafeAi.evaluationModel('jev-latest'),
+      state: { message },
       questions: {
         matched: {
           type: 'boolean',
@@ -31,8 +33,8 @@ app.post('/api/check', async (req, res) => {
       },
     });
 
-    // matched.probability が0.5以上なら1、未満なら0とする
-    const probability = result.answers.matched.probability ?? result.answers.matched;
+    // probability(true である確率)が0.5以上なら1、未満なら0とする
+    const probability = result.answers.matched.probability;
     const judgment = probability >= 0.5 ? 1 : 0;
 
     const replyText =
