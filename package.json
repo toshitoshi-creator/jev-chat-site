@@ -1,0 +1,14 @@
+{
+  "name": "jev-chat-site",
+  "version": "1.0.0",
+  "description": "TypeSafe AI (Jev) を使って、メッセージに特定の内容が含まれるか判定し、テキストで返事をするサイト",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@ai-sdk/typesafe-ai": "latest",
+    "express": "^4.19.2"
+  }
+}
